@@ -3,6 +3,10 @@
 [MediaPipe Tasks](https://developers.google.com/edge/mediapipe/solutions/guide) Vision 모델 4종을 **웹캠으로 실시간 실행**하는 Python 예제 모음입니다.
 모든 예제는 `LIVE_STREAM` 모드(비동기 콜백)로 동작하며, OpenCV로 결과를 화면에 그립니다.
 
+### 🌐 웹 데모: https://kangchaeyeon82.github.io/mediapipe-webcam/
+
+브라우저에서 바로 웹캠으로 커스텀 제스처 이모지 이펙트(👌 ❤️ 🖕)를 체험할 수 있습니다. (설치 불필요, 영상은 서버로 전송되지 않음)
+
 | 스크립트 | 태스크 | 모델 파일 | 출력 |
 |---|---|---|---|
 | `hand_webcam.py` | [Hand Landmarker](https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker) | `hand_landmarker.task` | 손 21개 랜드마크, 좌/우 손 구분 (최대 2손) |
@@ -58,6 +62,113 @@ python face_detect_webcam.py   # 얼굴 검출
 - BlazeFace short-range 모델로 얼굴 박스와 신뢰도, 키포인트 6개(양 눈, 코끝, 입, 양 귀)를 표시합니다.
 - 화면에 검출된 얼굴 수를 표시합니다.
 - 공식 문서에 full-range / sparse 모델도 있으나 short-range(카메라에서 2m 이내, 셀카·웹캠용)를 사용합니다.
+
+## 커스텀 제스처 학습
+
+내가 원하는 제스처를 직접 수집 → 학습 → 실시간 추론합니다.
+Hand Landmarker가 뽑은 손 랜드마크 21점(x, y, z)을 특징으로 쓰고, scikit-learn MLP 분류기로 학습합니다.
+(MediaPipe Model Maker는 Windows / Python 3.12에서 설치되지 않아 이 방식을 사용)
+
+### GUI 앱 (권장) — `gesture_studio.py`
+
+```bash
+python gesture_studio.py
+```
+
+수집 → 학습 → 추론을 한 화면에서 진행합니다. 왼쪽은 웹캠 화면과 로그, 오른쪽은 컨트롤 패널입니다.
+
+1. **① 제스처 라벨**: 이름 입력 후 `추가` (Enter). 목록에 라벨별 수집 개수가 표시됩니다.
+2. **② 데이터 수집**: 라벨 선택 → `● 녹화 시작` 또는 `SPACE`.
+   - `3초 대기`를 켜면 카운트다운 후 녹화 시작, `목표 개수`(기본 300)에 도달하면 자동 정지.
+   - 녹화 중엔 손 뼈대가 빨간색으로 바뀌고 진행 바가 찹니다.
+   - `선택 라벨 데이터 삭제`로 잘못 모은 라벨을 지울 수 있습니다 (확인 창 표시).
+3. **③ 학습**: `학습 시작` → 검증 결과가 로그 창에 출력되고, 끝나면 모델이 자동으로 로드됩니다.
+4. **④ 실시간 추론**: `추론 켜기` 체크 → 화면과 패널에 제스처/확률 표시. `임계값` 슬라이더 미만이면 `Unknown`.
+
+카메라가 안 잡히면 상단 `카메라` 번호를 바꾸고 `연결`을 누르세요.
+
+### CLI 스크립트
+
+| 파일 | 역할 |
+|---|---|
+| `gesture_studio.py` | GUI 앱 (수집/학습/추론 통합) |
+| `collect_gestures.py` | 웹캠으로 라벨별 랜드마크 수집 → `data/gestures.csv` |
+| `train_gestures.py` | CSV로 분류기 학습, 검증 결과 출력 → `models/custom_gesture.joblib` |
+| `custom_gesture_webcam.py` | 학습한 모델로 실시간 추론 |
+| `gesture_features.py` | 공통 전처리 (손목 기준 이동, 크기 정규화, 왼손 미러링) |
+
+### 1) 수집
+
+```bash
+python collect_gestures.py --labels none rock scissors paper
+```
+
+| 키 | 동작 |
+|---|---|
+| `1`~`9` | 수집할 라벨 선택 (`--labels` 순서) |
+| `SPACE` | 녹화 시작/정지 — 녹화 중엔 손이 보이는 매 프레임이 저장됨 |
+| `q` / `ESC` | 종료 |
+
+- 라벨당 **200~500개** 권장 (30fps 기준 10~15초 녹화).
+- 녹화 중에 손을 조금씩 돌리고, 거리를 바꾸고, 양손을 번갈아 쓰면 일반화가 잘 됩니다.
+- **`none` 라벨**(아무 제스처도 아닌 평범한 손)을 함께 수집하면 오인식이 크게 줄어듭니다.
+- 여러 번 실행해도 같은 CSV에 이어서 저장되므로, 나중에 라벨을 추가해도 됩니다.
+
+### 2) 학습
+
+```bash
+python train_gestures.py
+```
+
+- 데이터 80%로 학습, 20%로 검증해 정확도/혼동 행렬을 출력한 뒤, 전체 데이터로 다시 학습해 저장합니다.
+- 특정 라벨끼리 헷갈리면 해당 라벨 데이터를 더 수집하고 다시 학습하세요.
+
+### 3) 추론
+
+```bash
+python custom_gesture_webcam.py --threshold 0.6
+```
+
+- 손마다 `Left/Right: 제스처 (확률)` 을 표시하고, 확률이 `--threshold` 미만이면 `Unknown` 으로 표시합니다.
+- 왼손은 좌우 반전해서 오른손 모양으로 맞추므로, 한쪽 손으로만 수집해도 양손에서 인식됩니다.
+
+## 제스처 이모지 이펙트 — `gesture_effects.py`
+
+학습한 커스텀 제스처 모델로 화면에 이모지 이펙트를 띄웁니다.
+
+```bash
+python gesture_effects.py      # q/ESC: 종료, l: 손 랜드마크 표시 on/off
+```
+
+| 라벨 | 이펙트 |
+|---|---|
+| `okay` / `ok` | 👌 손 위에 튕기듯 팝업, 제스처 유지 중 살랑살랑 표시 |
+| `heart` | ❤️ 손 주변에서 하트가 계속 피어올라 흔들리며 위로 떠다님 |
+| `fuck you` | 🖕 화면 가운데로 갑자기 튀어나옴 (플래시 + 흔들림) |
+
+- 연속 3프레임 이상 인식돼야 시작하고, 6프레임 사라지면 종료합니다(깜빡임 방지). `THRESHOLD`(기본 0.7)로 민감도 조절.
+- 라벨 이름이 다르면 스크립트 상단 `LABEL_TO_EFFECT`에 추가하세요.
+- 이모지는 Windows 기본 폰트 `Segoe UI Emoji`(seguiemj.ttf)로 그립니다.
+
+## 웹 데모 (GitHub Pages) — `docs/`
+
+`gesture_effects.py`를 브라우저용으로 옮긴 버전입니다. GitHub Pages가 `main` 브랜치의 `docs/` 폴더를 배포합니다.
+
+| 파일 | 설명 |
+|---|---|
+| `docs/index.html` | 페이지 + MediaPipe Tasks Vision(JS)로 손 랜드마크 검출 + 이펙트 |
+| `docs/custom_gesture.json` | 학습한 분류기(StandardScaler + MLP 가중치)를 JSON으로 내보낸 것 |
+| `docs/hand_landmarker.task` | 손 랜드마크 모델 |
+| `export_web_model.py` | `models/custom_gesture.joblib` → `docs/custom_gesture.json` 변환 |
+
+모델을 다시 학습했다면 웹 데모에도 반영하기 위해:
+
+```bash
+python export_web_model.py
+git add docs/custom_gesture.json && git commit -m "Update web model" && git push
+```
+
+로컬에서 미리 보기: `cd docs && python -m http.server 8000` → http://localhost:8000
 
 ## 공통 구조
 
